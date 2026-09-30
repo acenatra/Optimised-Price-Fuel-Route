@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fuel Route Planner</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root { --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e3e2dd; --accent:#1f6feb; --stop:#d9480f; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+    .app { display:grid; grid-template-columns: 380px 1fr; height:100vh; }
+    aside { background:var(--panel); border-right:1px solid var(--line); overflow:auto; padding:16px; }
+    #map { height:100%; }
+    h1 { font-size:18px; margin:0 0 12px; }
+    form { display:grid; gap:8px; margin-bottom:16px; }
+    .ac { position:relative; }
+    .ac-list { position:absolute; z-index:1000; left:0; right:0; top:100%; margin:2px 0 0; padding:4px 0; list-style:none;
+               background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.15);
+               max-height:280px; overflow:auto; }
+    .ac-list[hidden] { display:none; }
+    .ac-list li { padding:7px 10px; cursor:pointer; display:flex; justify-content:space-between; gap:8px; }
+    .ac-list li[aria-selected=true], .ac-list li:hover { background:#eaf1fe; }
+    .ac-list li small { color:var(--muted); }
+    .ac-list mark { background:none; color:var(--accent); font-weight:700; padding:0; }
+    .ac-empty { padding:7px 10px; color:var(--muted); }
+    input[type=text] { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+    button { padding:9px; border:0; border-radius:6px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+    label.chk { color:var(--muted); display:flex; gap:6px; align-items:center; }
+    .summary { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+    .tile { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+    .tile b { display:block; font-size:18px; }
+    .tile span { color:var(--muted); font-size:12px; }
+    .stop { border-top:1px solid var(--line); padding:10px 0; }
+    .stop .n { display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--stop); color:#fff; font-size:12px; font-weight:700; margin-right:6px; }
+    .muted { color:var(--muted); font-size:12px; }
+    .error { background:#fff0ec; border:1px solid #f3c2b3; color:#8a2c0d; padding:10px; border-radius:6px; }
+    .pin { background:var(--stop); color:#fff; border-radius:50%; width:24px; height:24px; display:grid; place-items:center; font-weight:700; font-size:12px; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.4); }
+    @media (max-width: 800px) { .app { grid-template-columns:1fr; grid-template-rows:auto 60vh; height:auto; } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>⛽ Fuel Route Planner</h1>
+    <form method="get" action="{% url 'planner:map' %}">
+      <div class="ac"><input type="text" name="start" placeholder="Start, e.g. Chicago, IL" value="{{ start }}" required autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
+      <div class="ac"><input type="text" name="finish" placeholder="Finish, e.g. Los Angeles, CA" value="{{ finish }}" required autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list"></div>
+      <label class="chk"><input type="checkbox" name="start_full" value="true" {% if start_full %}checked{% endif %}> Depart with a full tank</label>
+      <button type="submit">Plan route</button>
+    </form>
+
+    {% if error %}<div class="error">{{ error.detail }}</div>{% endif %}
+
+    {% if plan %}
+      <div class="summary">
+        <div class="tile"><b>${{ plan.summary.total_fuel_cost|floatformat:2 }}</b><span>Total fuel cost</span></div>
+        <div class="tile"><b>{{ plan.route.distance_miles|floatformat:0 }} mi</b><span>{{ plan.route.duration_hours|floatformat:1 }} h driving</span></div>
+        <div class="tile"><b>{{ plan.summary.number_of_stops }}</b><span>Fuel stops</span></div>
+        <div class="tile"><b>{{ plan.summary.total_gallons_purchased|floatformat:1 }} gal</b><span>Avg ${{ plan.summary.average_price_paid|default_if_none:"–" }}/gal</span></div>
+      </div>
+      <div class="muted">{{ plan.start.name }} → {{ plan.finish.name }}</div>
+      {% for s in plan.fuel_stops %}
+        <div class="stop">
+          <div><span class="n">{{ s.order }}</span><b>{{ s.name }}</b></div>
+          <div class="muted">{{ s.address }}, {{ s.city }}, {{ s.state }}</div>
+          <div>Mile {{ s.route_mile }} · ${{ s.price_per_gallon }}/gal · {{ s.gallons }} gal · <b>${{ s.cost|floatformat:2 }}</b></div>
+          <div class="muted">{% if s.is_origin_fillup %}Fill-up before departure ({{ s.off_route_miles }} mi from start){% else %}{{ s.off_route_miles }} mi off route{% endif %}</div>
+        </div>
+      {% empty %}
+        <p class="muted">No fuel purchase needed for this trip.</p>
+      {% endfor %}
+    {% endif %}
+  </aside>
+  <div id="map"></div>
+</div>
+{{ plan|json_script:"plan-data" }}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const map = L.map('map').setView([39.5, -98.35], 4);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  const esc = v => String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  // ---- Location autocomplete (GET /api/v1/suggest/, served from the local gazetteer) ----
+  function attachAutocomplete(input) {
+    const list = document.createElement('ul');
+    list.className = 'ac-list'; list.hidden = true; list.setAttribute('role', 'listbox');
+    input.parentElement.appendChild(list);
+    let items = [], active = -1, timer = null, seq = 0, ctrl = null;
+
+    const close = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
+    const highlight = (label, q) => {
+      const term = q.split(',')[0].trim();
+      const i = term ? label.toLowerCase().indexOf(term.toLowerCase()) : -1;
+      return i === 0 ? `<mark>${esc(label.slice(0, term.length))}</mark>${esc(label.slice(term.length))}` : esc(label);
+    };
+    const setActive = n => {
+      active = (n + items.length) % items.length;
+      [...list.children].forEach((li, i) => li.setAttribute('aria-selected', i === active));
+      list.children[active].scrollIntoView({ block: 'nearest' });
+    };
+    const choose = i => { input.value = items[i].label; close(); };
+    const render = (results, q) => {
+      items = results; active = -1;
+      list.innerHTML = results.length ? '' : '<div class="ac-empty">No matching US places. Press Enter to search as an address.</div>';
+      results.forEach((r, i) => {
+        const li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.innerHTML = `<span>${highlight(r.label, q)}</span>`;
+        li.addEventListener('mousedown', e => { e.preventDefault(); choose(i); });  // before input blur
+        list.appendChild(li);
+      });
+      list.hidden = false; input.setAttribute('aria-expanded', 'true');
+    };
+    const fetchSuggestions = async q => {
+      const mine = ++seq;
+      if (ctrl) ctrl.abort();
+      ctrl = new AbortController();
+      try {
+        const res = await fetch('{% url "planner:suggest" %}?q=' + encodeURIComponent(q), { signal: ctrl.signal });
+        const data = await res.json();
+        if (mine === seq && document.activeElement === input) render(data.results, q);  // ignore stale replies
+      } catch (e) { /* aborted or offline: keep typing working */ }
+    };
+
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      if (q.length < 2) { seq++; close(); return; }
+      timer = setTimeout(() => fetchSuggestions(q), 120);
+    });
+    input.addEventListener('keydown', e => {
+      if (list.hidden || !items.length) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActive(active + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active < 0 ? -1 : active - 1); }
+      else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); choose(active); }
+      else if (e.key === 'Escape') close();
+    });
+    input.addEventListener('blur', () => setTimeout(close, 100));
+  }
+  document.querySelectorAll('.ac input').forEach(attachAutocomplete);
+
+  const plan = JSON.parse(document.getElementById('plan-data').textContent);
+  if (plan && plan.route && plan.route.geometry) {
+    const line = L.geoJSON(plan.route.geometry, { style: { color: '#1f6feb', weight: 5, opacity: .85 } }).addTo(map);
+    map.fitBounds(line.getBounds(), { padding: [30, 30] });
+    L.marker([plan.start.lat, plan.start.lon]).addTo(map).bindPopup('<b>Start</b><br>' + esc(plan.start.name));
+    L.marker([plan.finish.lat, plan.finish.lon]).addTo(map).bindPopup('<b>Finish</b><br>' + esc(plan.finish.name));
+    for (const s of plan.fuel_stops) {
+      const icon = L.divIcon({ className: '', html: `<div class="pin">${s.order}</div>`, iconSize: [24, 24] });
+      L.marker([s.lat, s.lon], { icon }).addTo(map).bindPopup(
+        `<b>${s.order}. ${esc(s.name)}</b><br>${esc(s.city)}, ${esc(s.state)}<br>` +
+        `$${s.price_per_gallon}/gal · ${s.gallons} gal · <b>$${s.cost.toFixed(2)}</b><br>Mile ${s.route_mile}`);
+    }
+  }
+</script>
+</body>
+</html>

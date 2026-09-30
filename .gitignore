@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+db.sqlite3
+.env
+# Census Gazetteer files are downloaded automatically by `load_stations`
+data/2024_Gaz_*.txt
+.playwright-mcp/
+data/sub-est*.csv
